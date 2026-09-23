@@ -41,9 +41,13 @@ upstream 이 같은 수정을 릴리스하면 포크를 접고 원본 마켓플�
 3. 수정 포함 상태로 `npm run build` → `bun test tests/worker/rate-limit-store.test.ts` → `bun test tests`
    (upstream 기준선과 같은 실패만 있어야 한다).
 4. 커밋 → main 병합·푸시 → `claude plugin marketplace update thedotmack && claude plugin update claude-mem@thedotmack`.
-5. 옛 버전 캐시(`~/.claude/plugins/cache/thedotmack/claude-mem/<옛 버전>`)를 치우고 워커를 재기동한다.
-   열린 세션의 훅은 자기 `CLAUDE_PLUGIN_ROOT`(옛 버전)를 먼저 쓰고, 워커 버전이 다르면 워커를 죽여 자기 버전으로
-   되돌린다. 옛 캐시가 없으면 캐시의 최신 버전으로 넘어가 싸움이 멈춘다.
+5. 워커는 손대지 않는다. 훅은 설치된 캐시 중 **가장 높은 버전**을 기준으로 워커 버전을 비교하므로, 업데이트 뒤 첫 훅이
+   워커를 새 버전으로 바꾼다(그 순간 워커 메모리의 관찰 대기열은 사라진다). 옛 세션의 훅이 워커를 옛 버전으로
+   되돌리는 일은 없다.
+6. 옛 버전 캐시(`~/.claude/plugins/cache/thedotmack/claude-mem/<옛 버전>`)는 **지우지 않는다**. 전환 전에 열린
+   세션은 시작할 때 잡은 그 디렉터리로 훅을 부르고, 디렉터리가 없으면 Claude Code 가 그 세션의 claude-mem 훅을 통째로
+   건너뛴다(2026-09-23 옛 캐시를 옮겼다가 약 4분간 모든 열린 세션의 기록이 빠진 것으로 확인). 옛 세션은 재시작하면 새
+   버전 훅을 쓴다.
 
 ## 설치·접기
 
@@ -54,4 +58,4 @@ upstream 이 같은 수정을 릴리스하면 포크를 접고 원본 마켓플�
     claude plugin install claude-mem@thedotmack
 
 접기 — upstream 이 #4072 또는 같은 수정을 릴리스하면 `weirdbb91/claude-mem` 자리에 `thedotmack/claude-mem` 을 넣어
-같은 세 줄을 실행하고, 위 5번처럼 옛 캐시를 치운 뒤 워커를 재기동한다.
+같은 세 줄을 실행한다. 워커 교체와 옛 캐시는 위 5·6번과 같다.
