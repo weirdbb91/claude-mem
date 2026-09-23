@@ -1,0 +1,45 @@
+# Keeps this fork on the latest upstream release + fork/patches (see FORK.md). Nothing is pushed unless
+# the build, typecheck and the full test suite pass; a failed run is GitHub's failure email.
+name: fork-sync
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fork-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Sync to the latest upstream release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          scripts/fork-sync.sh
+      # Upstream's own workflows (CI, npm publish, issue bots) have no business running in this fork.
+      - name: Keep upstream workflows disabled
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow list --all --json id,path,state \
+            --jq '.[] | select(.state == "active" and .path != ".github/workflows/fork-sync.yml") | .id' |
+            while read -r id; do gh workflow disable "$id"; done
