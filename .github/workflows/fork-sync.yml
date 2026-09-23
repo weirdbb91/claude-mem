@@ -4,7 +4,7 @@ name: fork-sync
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 20 * * *' # daily 05:23 KST, off the top of the hour (GitHub delays those)
   workflow_dispatch:
 
 permissions:

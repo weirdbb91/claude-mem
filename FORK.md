@@ -3,7 +3,7 @@
 upstream(thedotmack/claude-mem)의 한도 가드 버그(#4068 — 주간 한도가 리셋된 뒤에도 기억 기록이 멈춘 채로 남음)를
 고친 PR #4072 를 얹은 포크다. **사람이 할 일은 없다.**
 
-- **매시간 자동 동기화** — `.github/workflows/fork-sync.yml` 이 `scripts/fork-sync.sh` 를 돌린다. upstream 최신
+- **매일 자동 동기화(05:23 KST)** — `.github/workflows/fork-sync.yml` 이 `scripts/fork-sync.sh` 를 돌린다. upstream 최신
   릴리스(플러그인 버전을 올린 커밋)를 병합하고 `fork/patches/` 를 얹은 뒤, 릴리스 시점의 의존성(`npm --before` +
   upstream 번들에 박힌 Agent SDK 버전)으로 빌드한다. 타입 검사와 전체 테스트를 통과해야만 main 에 푸시한다.
   실패하면 아무것도 푸시하지 않고 GitHub 가 실패 메일을 보낸다 — 설치본은 마지막 정상 버전 그대로다.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # weirdbb91/claude-mem = latest upstream release + fork/patches, rebuilt and tested (see FORK.md).
-# .github/workflows/fork-sync.yml runs this hourly from a clean main checkout. Every failure exits
+# .github/workflows/fork-sync.yml runs this daily from a clean main checkout. Every failure exits
 # non-zero before the push, so the last good build stays what Claude Code installs.
 # FORK_SYNC_TARGET=<commit> pins the upstream release to sync to (tests and manual runs).
 set -euo pipefail
