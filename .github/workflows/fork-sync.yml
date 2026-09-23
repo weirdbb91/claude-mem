@@ -39,6 +39,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }} # the checkout also has an upstream remote; gh would pick the parent repo
         run: |
           gh workflow list --all --json id,path,state \
             --jq '.[] | select(.state == "active" and .path != ".github/workflows/fork-sync.yml") | .id' |
