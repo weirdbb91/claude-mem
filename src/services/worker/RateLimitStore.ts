@@ -9,7 +9,7 @@
  *
  *   {
  *     status: "allowed" | "allowed_warning" | "rejected",
- *     resetsAt?: number,                              // epoch ms or s
+ *     resetsAt?: number,                              // epoch ms
  *     rateLimitType?: "five_hour" | "seven_day"
  *                   | "seven_day_opus" | "seven_day_sonnet"
  *                   | "overage",
@@ -25,12 +25,11 @@
  *   }
  *
  * A single event is keyed by its binding `rateLimitType` (almost always
- * `five_hour`), but `unifiedWindows` carries the current reading of every
- * window. set() fans that out to the per-window buckets so a window that is
- * never the binding one still gets refreshed — otherwise a stale reading
- * (e.g. seven_day at 98% from before an account switch) would sit in the
- * store for the life of the process and trip the quota guard on every
- * request. get() additionally drops snapshots whose `resetsAt` has passed.
+ * five_hour), so set() fans `unifiedWindows` out to the per-window buckets:
+ * a window that is never the binding one still gets refreshed — otherwise a
+ * stale reading (e.g. seven_day at 98% from before an account switch) would
+ * sit in the store for the life of the process and trip the quota guard on
+ * every request.
  *
  * Pattern adapted from meridian's proxy/rateLimitStore.ts (last-write-wins
  * per `rateLimitType` bucket, in-memory only). State resets on worker
@@ -105,7 +104,7 @@ export class RateLimitStore {
     // Refresh every other window the provider reported in this event. These
     // readings are as current as the binding one, so they replace whatever
     // the store held for those windows — including a `rejected` snapshot
-    // left over from a different account or an already-reset window.
+    // left over from a different account.
     if (unified) {
       for (const [window, reading] of Object.entries(unified)) {
         if (window === key || !isRecord(reading)) continue;
@@ -122,17 +121,10 @@ export class RateLimitStore {
     return isNewRejection(previous, info);
   }
 
-  /**
-   * Snapshot a single bucket, or undefined if not yet seen or if its window
-   * has already reset (`resetsAt` in the past) — a reading from before the
-   * reset says nothing about the current window.
-   */
-  get(type: RateLimitWindow | undefined, now: number = Date.now()): RateLimitEntry | undefined {
-    const entry = this.entries.get(type ?? 'default');
-    if (!entry) return undefined;
-    const resetsAtMs = toEpochMs(entry.resetsAt);
-    if (resetsAtMs !== undefined && resetsAtMs <= now) return undefined;
-    return entry;
+  /** Snapshot a single bucket, or undefined if not yet seen. */
+  get(type: RateLimitWindow | undefined): RateLimitEntry | undefined {
+    if (!type) return this.entries.get('default');
+    return this.entries.get(type);
   }
 
   /** Latest snapshot per "interesting" window for health surface. */
@@ -144,17 +136,25 @@ export class RateLimitStore {
     overage?: RateLimitEntry;
   } {
     return {
-      five_hour: this.get('five_hour'),
-      seven_day: this.get('seven_day'),
-      seven_day_opus: this.get('seven_day_opus'),
-      seven_day_sonnet: this.get('seven_day_sonnet'),
-      overage: this.get('overage'),
+      five_hour: this.entries.get('five_hour'),
+      seven_day: this.entries.get('seven_day'),
+      seven_day_opus: this.entries.get('seven_day_opus'),
+      seven_day_sonnet: this.entries.get('seven_day_sonnet'),
+      overage: this.entries.get('overage'),
     };
   }
 
   get size(): number {
     return this.entries.size;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isRateLimitStatus(value: unknown): value is NonNullable<RateLimitInfo['status']> {
+  return value === 'allowed' || value === 'allowed_warning' || value === 'rejected';
 }
 
 /** Process-wide singleton. */
@@ -205,27 +205,14 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  const resetsAtMs = toEpochMs(resetsAt);
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
   if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
 }
 
-/**
- * Normalize a `resetsAt` value to epoch ms. The SDK documents epoch ms but
- * live `rate_limit_event` payloads carry epoch seconds, so anything too
- * small to be ms is treated as seconds.
- */
-export function toEpochMs(resetsAt: number | undefined): number | undefined {
+function normalizeResetTimeMs(resetsAt: number | undefined): number | undefined {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
   return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isRateLimitStatus(value: unknown): value is NonNullable<RateLimitInfo['status']> {
-  return value === 'allowed' || value === 'allowed_warning' || value === 'rejected';
 }
 
 /**
@@ -292,8 +279,13 @@ export function shouldAbortForQuota(
   ];
 
   for (const window of windows) {
-    const entry = store.get(window, now);
+    const entry = store.get(window);
     if (!entry) continue;
+
+    // Ignore expired snapshots without removing them from the store so a
+    // repeated stale rejection does not look new to set() telemetry.
+    const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
@@ -329,7 +321,6 @@ export function shouldAbortForQuota(
     // Reset-grace buffer: only meaningful for the rolling 5h window where
     // a fresh bucket is imminent. Skip when utilization is low — no point
     // bailing on a window that just reset to ~0%.
-    const resetsAtMs = toEpochMs(entry.resetsAt);
     if (
       window === 'five_hour' &&
       resetsAtMs !== undefined &&

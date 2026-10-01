@@ -15,7 +15,7 @@ import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
-import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { acquireSpawnLock, releaseSpawnLock, isClientOnly } from "./worker-spawn-gate.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
 
@@ -625,13 +625,20 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     if (pluginVersion !== 'unknown') {
       expectedPluginVersion = pluginVersion;
     }
-    if (matches) {
+    // A client-only machine does not own the worker: a version mismatch is
+    // only logged (warnIfVersionStillMismatched) and never recycles it.
+    const clientOnly = isClientOnly();
+    if (matches || clientOnly) {
       const ready = await waitForWorkerReadiness();
       if (ready) {
         if (expectedPluginVersion !== null) {
           await warnIfVersionStillMismatched(expectedPluginVersion);
         }
         return true;
+      }
+      if (clientOnly) {
+        logger.warn('SYSTEM', 'CLAUDE_MEM_CLIENT_ONLY: remote worker is healthy but not ready; skipping hook API call');
+        return false;
       }
 
       // Same version, but not ready. Either it is still booting (leave it

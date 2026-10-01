@@ -1,6 +1,7 @@
 import { dirname, join } from 'path';
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
-import { resolveDataDir } from './paths.js';
+import { resolveDataDir, USER_SETTINGS_PATH } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -57,6 +58,14 @@ function getSpawnLockPath(): string {
  * and acquisition is retried exactly once.
  */
 export function acquireSpawnLock(): boolean {
+  if (isClientOnly()) {
+    // Every launcher spawns only after winning this lock, so refusing it here
+    // keeps a client from ever starting a local worker: an empty local DB on
+    // the tunnel's port would split the memory in two. Callers then wait for
+    // the "holder's" worker, find none, and report the worker unreachable.
+    logger.error('SYSTEM', 'CLAUDE_MEM_CLIENT_ONLY: not spawning a local worker; the remote worker is unreachable (check the tunnel)');
+    return false;
+  }
   const lockPath = getSpawnLockPath();
   const payload = JSON.stringify({
     pid: process.pid,
@@ -155,4 +164,16 @@ export function releaseSpawnLock(): void {
     // Missing, unreadable, or corrupt lock file — leave it alone; the
     // staleness breaker (SPAWN_LOCK_STALE_MS) reclaims anything orphaned.
   }
+}
+
+/**
+ * CLAUDE_MEM_CLIENT_ONLY=true: this machine uses a worker that another machine
+ * runs (reached over an SSH tunnel on the same port). It must never spawn,
+ * recycle or stop that worker — see weirdbb91/claude-mem FORK.md.
+ */
+export function isClientOnly(): boolean {
+  const raw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLIENT_ONLY;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new Error(`CLAUDE_MEM_CLIENT_ONLY must be "true" or "false", got ${JSON.stringify(raw)}`);
 }

@@ -1,3 +1,4 @@
+import { isClientOnly } from '../../shared/worker-spawn-gate.js';
 
 export interface ShutdownResult {
   workerWasRunning: boolean;
@@ -41,6 +42,9 @@ export async function shutdownWorkerAndWait(
   port: number | string,
   timeoutMs: number = 10000,
 ): Promise<ShutdownResult> {
+  if (isClientOnly()) {
+    throw new Error('CLAUDE_MEM_CLIENT_ONLY: the worker on this port belongs to another machine; stop or restart it there');
+  }
   const baseUrl = `http://127.0.0.1:${port}`;
   let workerWasRunning = false;
 

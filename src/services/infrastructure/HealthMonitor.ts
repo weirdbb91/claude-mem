@@ -3,6 +3,7 @@ import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isClientOnly } from '../../shared/worker-spawn-gate.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -159,6 +160,9 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
 }
 
 export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
+  if (isClientOnly()) {
+    throw new Error('CLAUDE_MEM_CLIENT_ONLY: the worker on this port belongs to another machine; stop or restart it there');
+  }
   try {
     // The CLI restart path stops the worker through this same endpoint; the
     // reason tag lets the worker report shutdown_reason: 'restart' on its
