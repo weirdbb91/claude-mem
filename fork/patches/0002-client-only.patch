@@ -1,0 +1,157 @@
+feat: CLAUDE_MEM_CLIENT_ONLY — use a worker another machine runs, never spawn/recycle/stop one
+
+Marker: CLAUDE_MEM_CLIENT_ONLY
+
+Several machines share one worker: the worker host runs it as usual, the others reach it through
+`ssh -L 127.0.0.1:<port>:127.0.0.1:<port>` and set CLAUDE_MEM_CLIENT_ONLY=true. Upstream assumes
+the worker on the port is its own, which splits the memory or drops data on a client:
+
+- acquireSpawnLock() refuses: every launcher (hooks, start hook, MCP server, CLI restart) spawns only
+  after winning it, so a client never starts a local worker with an empty DB on the tunnel's port.
+  Callers then find no worker and report it unreachable (hook fail-loud counter, start-hook error).
+- ensureWorkerRunning() does not recycle a worker on another plugin version (it would try to
+  SIGKILL a process it does not own and drop the hook's data); the mismatch is only logged.
+- httpShutdown() / shutdownWorkerAndWait() throw instead of stopping the shared worker.
+- Any value but "true"/"false" is an error.
+---
+diff --git a/src/services/infrastructure/HealthMonitor.ts b/src/services/infrastructure/HealthMonitor.ts
+index 922399e2..da203840 100644
+--- a/src/services/infrastructure/HealthMonitor.ts
++++ b/src/services/infrastructure/HealthMonitor.ts
+@@ -3,6 +3,7 @@ import net from 'net';
+ import { logger } from '../../utils/logger.js';
+ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
++import { isClientOnly } from '../../shared/worker-spawn-gate.js';
+ 
+ function getWorkerHost(): string {
+   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
+@@ -159,6 +160,9 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000):
+ }
+ 
+ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
++  if (isClientOnly()) {
++    throw new Error('CLAUDE_MEM_CLIENT_ONLY: the worker on this port belongs to another machine; stop or restart it there');
++  }
+   try {
+     // The CLI restart path stops the worker through this same endpoint; the
+     // reason tag lets the worker report shutdown_reason: 'restart' on its
+diff --git a/src/services/install/shutdown-helper.ts b/src/services/install/shutdown-helper.ts
+index 91689c35..c0a43ee1 100644
+--- a/src/services/install/shutdown-helper.ts
++++ b/src/services/install/shutdown-helper.ts
+@@ -1,3 +1,4 @@
++import { isClientOnly } from '../../shared/worker-spawn-gate.js';
+ 
+ export interface ShutdownResult {
+   workerWasRunning: boolean;
+@@ -41,6 +42,9 @@ export async function shutdownWorkerAndWait(
+   port: number | string,
+   timeoutMs: number = 10000,
+ ): Promise<ShutdownResult> {
++  if (isClientOnly()) {
++    throw new Error('CLAUDE_MEM_CLIENT_ONLY: the worker on this port belongs to another machine; stop or restart it there');
++  }
+   const baseUrl = `http://127.0.0.1:${port}`;
+   let workerWasRunning = false;
+ 
+diff --git a/src/shared/SettingsDefaultsManager.ts b/src/shared/SettingsDefaultsManager.ts
+index ba8a5ae9..7c9dc9a3 100644
+--- a/src/shared/SettingsDefaultsManager.ts
++++ b/src/shared/SettingsDefaultsManager.ts
+@@ -43,6 +43,7 @@ export interface SettingsDefaults {
+   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+   CLAUDE_MEM_WORKER_PORT: string;
+   CLAUDE_MEM_WORKER_HOST: string;
++  CLAUDE_MEM_CLIENT_ONLY: string;
+   CLAUDE_MEM_API_TIMEOUT_MS: string;
+   CLAUDE_MEM_SKIP_TOOLS: string;
+   CLAUDE_MEM_PROVIDER: string;  
+@@ -194,6 +195,7 @@ export class SettingsDefaultsManager {
+     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
+     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
++    CLAUDE_MEM_CLIENT_ONLY: 'false',  // 'true': this machine only talks to a worker someone else runs (e.g. over an SSH tunnel) — never spawns, recycles or stops one
+     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
+     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+     // Deliberate divergence from the installer prompt: the interactive
+diff --git a/src/shared/worker-spawn-gate.ts b/src/shared/worker-spawn-gate.ts
+index 1c494b4f..feb4581b 100644
+--- a/src/shared/worker-spawn-gate.ts
++++ b/src/shared/worker-spawn-gate.ts
+@@ -1,6 +1,7 @@
+ import { dirname, join } from 'path';
+ import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
+-import { resolveDataDir } from './paths.js';
++import { resolveDataDir, USER_SETTINGS_PATH } from './paths.js';
++import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+ import { logger } from '../utils/logger.js';
+ 
+ /**
+@@ -57,6 +58,14 @@ function getSpawnLockPath(): string {
+  * and acquisition is retried exactly once.
+  */
+ export function acquireSpawnLock(): boolean {
++  if (isClientOnly()) {
++    // Every launcher spawns only after winning this lock, so refusing it here
++    // keeps a client from ever starting a local worker: an empty local DB on
++    // the tunnel's port would split the memory in two. Callers then wait for
++    // the "holder's" worker, find none, and report the worker unreachable.
++    logger.error('SYSTEM', 'CLAUDE_MEM_CLIENT_ONLY: not spawning a local worker; the remote worker is unreachable (check the tunnel)');
++    return false;
++  }
+   const lockPath = getSpawnLockPath();
+   const payload = JSON.stringify({
+     pid: process.pid,
+@@ -156,3 +165,15 @@ export function releaseSpawnLock(): void {
+     // staleness breaker (SPAWN_LOCK_STALE_MS) reclaims anything orphaned.
+   }
+ }
++
++/**
++ * CLAUDE_MEM_CLIENT_ONLY=true: this machine uses a worker that another machine
++ * runs (reached over an SSH tunnel on the same port). It must never spawn,
++ * recycle or stop that worker — see weirdbb91/claude-mem FORK.md.
++ */
++export function isClientOnly(): boolean {
++  const raw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLIENT_ONLY;
++  if (raw === 'true') return true;
++  if (raw === 'false') return false;
++  throw new Error(`CLAUDE_MEM_CLIENT_ONLY must be "true" or "false", got ${JSON.stringify(raw)}`);
++}
+diff --git a/src/shared/worker-utils.ts b/src/shared/worker-utils.ts
+index 307d36b0..d8dde0c9 100644
+--- a/src/shared/worker-utils.ts
++++ b/src/shared/worker-utils.ts
+@@ -15,7 +15,7 @@ import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index
+ // tests mock the barrel module wholesale, and the resolver must stay real.
+ // ProcessManager imports nothing from worker-utils, so no cycle.
+ import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+-import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
++import { acquireSpawnLock, releaseSpawnLock, isClientOnly } from "./worker-spawn-gate.js";
+ import { killProcessTree } from "./kill-process-tree.js";
+ import { writeJsonFileAtomic } from "./atomic-json.js";
+ 
+@@ -625,7 +625,10 @@ export async function ensureWorkerRunning(): Promise<boolean> {
+     if (pluginVersion !== 'unknown') {
+       expectedPluginVersion = pluginVersion;
+     }
+-    if (matches) {
++    // A client-only machine does not own the worker: a version mismatch is
++    // only logged (warnIfVersionStillMismatched) and never recycles it.
++    const clientOnly = isClientOnly();
++    if (matches || clientOnly) {
+       const ready = await waitForWorkerReadiness();
+       if (ready) {
+         if (expectedPluginVersion !== null) {
+@@ -633,6 +636,10 @@ export async function ensureWorkerRunning(): Promise<boolean> {
+         }
+         return true;
+       }
++      if (clientOnly) {
++        logger.warn('SYSTEM', 'CLAUDE_MEM_CLIENT_ONLY: remote worker is healthy but not ready; skipping hook API call');
++        return false;
++      }
+ 
+       // Same version, but not ready. Either it is still booting (leave it
+       // alone) or its background init died and it will NEVER become ready

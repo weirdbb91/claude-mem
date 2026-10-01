@@ -1,6 +1,6 @@
 // Fork-owned check (weirdbb91/claude-mem, see FORK.md). It only uses API that upstream exports too, so
 // scripts/fork-sync.sh runs it against plain upstream: once it passes there, upstream has fixed the
-// stale quota guard (#4068) and the fork stops carrying fork/patches.
+// stale quota guard (#4068) and the fork stops carrying fork/patches/0001-quota-guard-4072.patch.
 import { describe, expect, it } from 'bun:test';
 import { RateLimitStore, shouldAbortForQuota, type RateLimitInfo } from '../../src/services/worker/RateLimitStore';
 
