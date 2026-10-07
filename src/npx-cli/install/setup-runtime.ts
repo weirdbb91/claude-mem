@@ -8,8 +8,10 @@ import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { ensureTreeSitterCliBinary } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -39,18 +41,15 @@ function userHasOptedOutOfVectorSearch(): boolean {
   let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    raw = readJsonFileWithBom(USER_SETTINGS_PATH);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
     return false;
   }
   if (!raw || typeof raw !== 'object') return false;
-  const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
-    ? (record.env as Record<string, unknown>)
-    : {};
-  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  if (Array.isArray(raw)) return false;
+  const value = settingsTarget(raw as Record<string, unknown>).CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
   return value === true || value === 'true' || value === '1';
 }
 
@@ -167,7 +166,7 @@ export function getUvVersion(): string | null {
   }
 }
 
-function describeExecError(error: unknown): string {
+function describeExecError(error: unknown, includeStdoutWithStderr = false): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     const parts: string[] = [];
@@ -175,7 +174,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout && (!stderr || includeStdoutWithStderr)) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -482,6 +481,45 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+}
+
+/**
+ * Provision the tree-sitter CLI in `targetDir` and report a failure at
+ * `severity`. `install` passes WARN_CONTINUE: it runs before the sign-in/trial
+ * step, and smart_search is not worth an aborted install. `repair` passes
+ * ABORT. Returns whether the CLI is usable.
+ */
+export async function provisionTreeSitterCli(
+  targetDir: string,
+  severity: ErrorSeverity.ABORT | ErrorSeverity.WARN_CONTINUE,
+  summary: InstallSummary,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<boolean> {
+  try {
+    await ensureTreeSitterCliBinary(targetDir, installTimeoutMs);
+    return true;
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const processError = err as Error & { code?: number | string; killed?: boolean };
+    const failure = processError.killed
+      ? 'timed out'
+      : typeof processError.code === 'number'
+        ? `exited with code ${processError.code}`
+        : err.message;
+    installerError(severity, {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+      cause: Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
+        code: processError.code,
+        killed: processError.killed,
+      }),
+      details: describeExecError(err, true).slice(0, 4000),
+      ...(severity === ErrorSeverity.WARN_CONTINUE
+        ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
+        : {}),
+    }, summary);
+    return false;
+  }
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
