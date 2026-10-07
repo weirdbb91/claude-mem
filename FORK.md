@@ -1,6 +1,9 @@
 # weirdbb91/claude-mem — upstream 을 자동으로 따라가는 포크
 
-upstream(thedotmack/claude-mem)에 `fork/patches/` 의 패치를 얹은 포크다. **사람이 할 일은 없다.**
+upstream(thedotmack/claude-mem)에 `fork/patches/` 의 패치를 얹은 포크다. 평소엔 사람이 할 일이 없다. 단, upstream 이
+패치가 닿는 코드를 바꾸면 패치가 충돌해 동기화가 멈춘다 — 실패 메일 말고는 드러나지 않고 설치본은 옛 버전에 머문다.
+그때는 패치를 다시 쓴다: upstream 릴리스 커밋에서 `git apply --3way` 로 얹어 충돌을 의도대로 풀고(upstream 이 새로 낸
+경로도 패치가 막아야 하는지 본다), 머리말은 두고 본문을 `git diff` 로 다시 만든다.
 
 | 패치 | 내용 | 확인 |
 |---|---|---|
@@ -30,3 +33,4 @@ upstream(thedotmack/claude-mem)에 `fork/patches/` 의 패치를 얹은 포크�
   → 수동 절차를 모두 없애고 위 자동화로 바꿨다.
 - 2026-10-01 운영자: claude-mem 중앙 워커(baekmini) 방식 → "A로 진행할건데 우선 머신을 재시작 한번 하려고 합니다."
   (A = 포크 패치 + SSH 터널) → `0002-client-only` 추가. 9/26 부터 실패하던 동기화(패치 충돌·워크플로 푸시 거부)도 함께 고침.
+- 2026-10-07 10/3~10/7 동기화가 0002 패치 충돌로 실패 → 패치를 v13.34.2 에 맞춰 다시 씀(새 경로 `ensureWorkerReadyWithin`·`holdSpawnLock` 도 막음).
