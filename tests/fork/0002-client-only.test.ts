@@ -6,7 +6,7 @@ import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
-import { acquireSpawnLock, isClientOnly, releaseSpawnLock } from '../../src/shared/worker-spawn-gate';
+import { acquireSpawnLock, holdSpawnLock, isClientOnly, releaseSpawnLock } from '../../src/shared/worker-spawn-gate';
 import { httpShutdown } from '../../src/services/infrastructure/HealthMonitor';
 import { shutdownWorkerAndWait } from '../../src/services/install/shutdown-helper';
 import { resolveDataDir } from '../../src/shared/paths';
@@ -33,6 +33,7 @@ describe('CLAUDE_MEM_CLIENT_ONLY', () => {
 
   it('refuses to stop the remote worker', async () => {
     setClientOnly('true');
+    await expect(holdSpawnLock(0)).rejects.toThrow('CLAUDE_MEM_CLIENT_ONLY');
     await expect(httpShutdown(1)).rejects.toThrow('CLAUDE_MEM_CLIENT_ONLY');
     await expect(shutdownWorkerAndWait(1)).rejects.toThrow('CLAUDE_MEM_CLIENT_ONLY');
   });
