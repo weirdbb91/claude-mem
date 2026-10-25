@@ -228,6 +228,25 @@ This ownership check also applies to session summaries and does not hold a
 database lock during the provider call. Recovery may still require another paid
 provider call; it does not guarantee exactly-once provider execution.
 
+### Claude provider through a gateway
+
+With `CLAUDE_MEM_SERVER_PROVIDER=claude`, the generation worker calls
+api.anthropic.com. To send its calls through an Anthropic-compatible gateway
+(Cloudflare AI Gateway, LiteLLM, a corporate proxy) for per-call logs, cost and
+rate limits, set these on the generation worker:
+
+| Setting | Description |
+|---------|-------------|
+| `CLAUDE_MEM_ANTHROPIC_BASE_URL` | The gateway's Anthropic-compatible base URL; `/v1/messages` is appended |
+| `CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS` | Extra headers on each request, such as the gateway's own auth header, in the format of Claude Code's `ANTHROPIC_CUSTOM_HEADERS`: one `Name: Value` per line. They can't replace the API key, version or content type. A line that isn't a valid header is skipped with a warning that gives its line number, never its text |
+
+Claude Code's own `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` are not
+read, so a server started from a shell that sets them for Claude Code doesn't
+send its key to that gateway.
+
+A cmem.ai memory key (`cm_pro_…`) is refused on this provider, as the API key
+or inside a custom header; it only works on the cmem.ai gateway.
+
 ### Custom generation provider (advanced)
 
 The generation worker ships with `claude`, `gemini` and `openrouter` providers, and
@@ -256,9 +275,11 @@ by keyword: `/v1/search`, `/v1/context` and the MCP `search` and `context`
 tools fuse a keyword ranking with the observations nearest the query's vector,
 so a query finds a memory that shares none of its words. The server embeds
 queries and the generation worker embeds the observations it writes, in-process
-with the model `CLAUDE_MEM_EMBEDDING_MODEL` names; the Docker image includes the
-default one, and another downloads at its first use. Without pgvector, or while
-the model cannot load, search is keyword-only.
+with the model `CLAUDE_MEM_EMBEDDING_MODEL` names. The Docker image includes the
+default one; build it with `--build-arg EMBEDDING_REPO=<repo>`, the model's
+repository in `src/services/vector/models.ts`, to include another, which would
+otherwise download at its first use. Without pgvector, or while the model cannot
+load, search is keyword-only.
 
 | Env var | Effect |
 |---------|--------|
